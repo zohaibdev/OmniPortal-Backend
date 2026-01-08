@@ -11,7 +11,10 @@ return [
         'http://127.0.0.1:3001',
         'http://127.0.0.1:3002',
     ],
-    'allowed_origins_patterns' => [],
+    'allowed_origins_patterns' => [
+        '#^https?://.*\.time-luxe\.com$#',
+        '#^https?://time-luxe\.com$#',
+    ],
     'allowed_headers' => ['*'],
     'exposed_headers' => [],
     'max_age' => 0,
