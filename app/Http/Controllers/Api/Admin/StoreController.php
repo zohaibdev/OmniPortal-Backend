@@ -309,17 +309,14 @@ class StoreController extends Controller
         $hardDelete = request()->boolean('hard_delete', false);
         
         if ($hardDelete) {
-            // Full cleanup: Forge site, deployment folder, tenant DB, store record
-            $success = $this->storeService->delete($store);
+            // Queue full cleanup: Forge site, deployment folder, tenant DB, store record
+            \App\Jobs\DeleteStoreJob::dispatch($store);
             
-            if (!$success) {
-                return response()->json([
-                    'message' => 'Failed to completely delete store. Some resources may need manual cleanup.',
-                ], 500);
-            }
+            // Force delete the store record
+            $store->forceDelete();
 
             return response()->json([
-                'message' => 'Store and all associated resources deleted permanently',
+                'message' => 'Store deletion initiated. All associated resources will be cleaned up.',
             ]);
         }
 
@@ -336,16 +333,11 @@ class StoreController extends Controller
      */
     public function redeploy(Store $store): JsonResponse
     {
-        $success = $this->storeService->redeploy($store);
-
-        if (!$success) {
-            return response()->json([
-                'message' => 'Failed to redeploy store',
-            ], 500);
-        }
+        // Queue the deployment job
+        \App\Jobs\DeployStorefrontJob::dispatch($store, true, app()->environment('production'));
 
         return response()->json([
-            'message' => 'Store redeployed successfully',
+            'message' => 'Store redeployment queued',
             'deployment_status' => $this->storeService->getDeploymentStatus($store),
         ]);
     }
@@ -371,17 +363,43 @@ class StoreController extends Controller
             ], 400);
         }
 
-        try {
-            $this->forgeService->createSite($store);
-            
-            return response()->json([
-                'message' => 'Forge site created successfully',
-                'store' => $store->fresh(),
-            ]);
-        } catch (\Exception $e) {
-            return response()->json([
-                'message' => 'Failed to create Forge site: ' . $e->getMessage(),
-            ], 500);
-        }
+        // Queue the full provisioning job
+        \App\Jobs\ProvisionStoreJob::dispatch(
+            $store,
+            createForgeSite: true,
+            createDatabase: !$store->database_name, // Only create DB if not exists
+            deployStorefront: true
+        );
+        
+        return response()->json([
+            'message' => 'Store provisioning started. This may take a few minutes.',
+            'store' => $store->fresh(),
+        ]);
+    }
+
+    /**
+     * Update custom domain for store
+     */
+    public function updateDomain(Request $request, Store $store): JsonResponse
+    {
+        $request->validate([
+            'custom_domain' => 'nullable|string|max:255',
+        ]);
+
+        $oldDomain = $store->custom_domain;
+        $newDomain = $request->input('custom_domain');
+
+        $store = $this->storeService->update($store, ['custom_domain' => $newDomain]);
+
+        // Clear domain cache
+        \App\Http\Middleware\ResolveTenant::clearStoreCache($store);
+
+        return response()->json([
+            'message' => 'Custom domain updated',
+            'store' => $store,
+            'note' => $newDomain 
+                ? 'Please update DNS to point ' . $newDomain . ' to your server IP'
+                : 'Custom domain removed',
+        ]);
     }
 }

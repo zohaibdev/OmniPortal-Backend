@@ -3,13 +3,25 @@
 namespace App\Http\Middleware;
 
 use App\Models\Store;
+use App\Models\Domain;
 use App\Services\TenantDatabaseService;
 use Closure;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 use Symfony\Component\HttpFoundation\Response;
 
 class ResolveTenant
 {
+    /**
+     * Reserved subdomains that cannot be used for stores
+     */
+    protected array $reservedSubdomains = [
+        'www', 'api', 'admin', 'owner', 'app', 'mail', 'smtp', 'ftp',
+        'cdn', 'static', 'assets', 'images', 'media', 'staging', 'dev',
+        'test', 'demo', 'support', 'help', 'docs', 'blog', 'news',
+    ];
+
     public function __construct(
         private TenantDatabaseService $tenantService
     ) {}
@@ -45,6 +57,9 @@ class ResolveTenant
         $request->merge(['store' => $store]);
         $request->attributes->set('store', $store);
 
+        // Log store access for analytics
+        $this->logStoreAccess($store, $request);
+
         return $next($request);
     }
 
@@ -64,27 +79,45 @@ class ResolveTenant
 
         // 1. Check for store ID in header (for API calls)
         if ($storeId = $request->header('X-Store-ID')) {
-            return Store::find($storeId);
+            return $this->getCachedStore('id', $storeId);
         }
 
         // 2. Check for store slug in header
         if ($storeSlug = $request->header('X-Store-Slug')) {
-            return Store::where('slug', $storeSlug)->first();
+            return $this->getCachedStore('slug', $storeSlug);
         }
 
-        // 3. Check subdomain
+        // 3. Check subdomain or custom domain
         $host = $request->getHost();
+        
+        // Try to get from cache first
+        $cacheKey = "store:domain:{$host}";
+        $store = Cache::remember($cacheKey, 300, function () use ($host) {
+            return $this->resolveStoreByHost($host);
+        });
+
+        return $store;
+    }
+
+    /**
+     * Resolve store by hostname (subdomain or custom domain)
+     */
+    protected function resolveStoreByHost(string $host): ?Store
+    {
         $baseDomain = config('services.forge.base_domain', config('app.base_domain', 'time-luxe.com'));
         
-        // Extract subdomain if host ends with base domain
+        // 1. Check if it's a subdomain of base domain
         if (str_ends_with($host, '.' . $baseDomain)) {
             $subdomain = str_replace('.' . $baseDomain, '', $host);
-            if ($subdomain && !in_array($subdomain, ['www', 'api', 'admin', 'owner'])) {
+            
+            if ($subdomain && !in_array($subdomain, $this->reservedSubdomains)) {
+                // Try subdomain field first
                 $store = Store::where('subdomain', $subdomain)->first();
                 if ($store) {
                     return $store;
                 }
-                // Also try matching by slug
+                
+                // Try slug match
                 $store = Store::where('slug', $subdomain)->first();
                 if ($store) {
                     return $store;
@@ -92,11 +125,11 @@ class ResolveTenant
             }
         }
         
-        // Fallback: traditional subdomain detection for any domain
+        // 2. Traditional subdomain detection for any domain
         $parts = explode('.', $host);
         if (count($parts) >= 3) {
             $subdomain = $parts[0];
-            if (!in_array($subdomain, ['www', 'api', 'admin', 'owner'])) {
+            if (!in_array($subdomain, $this->reservedSubdomains)) {
                 $store = Store::where('subdomain', $subdomain)->first();
                 if ($store) {
                     return $store;
@@ -104,7 +137,99 @@ class ResolveTenant
             }
         }
 
-        // 4. Check custom domain
-        return Store::where('custom_domain', $host)->first();
+        // 3. Check custom domain (exact match)
+        $store = Store::where('custom_domain', $host)->first();
+        if ($store) {
+            return $store;
+        }
+
+        // 4. Check domains table for verified custom domains
+        $domain = Domain::where('domain', $host)
+            ->where('status', 'active')
+            ->where('is_verified', true)
+            ->first();
+        
+        if ($domain) {
+            return $domain->store;
+        }
+
+        // 5. Check if host without www matches
+        if (str_starts_with($host, 'www.')) {
+            $hostWithoutWww = substr($host, 4);
+            
+            $store = Store::where('custom_domain', $hostWithoutWww)->first();
+            if ($store) {
+                return $store;
+            }
+
+            $domain = Domain::where('domain', $hostWithoutWww)
+                ->where('status', 'active')
+                ->where('is_verified', true)
+                ->first();
+            
+            if ($domain) {
+                return $domain->store;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Get cached store by field
+     */
+    protected function getCachedStore(string $field, $value): ?Store
+    {
+        $cacheKey = "store:{$field}:{$value}";
+        
+        return Cache::remember($cacheKey, 300, function () use ($field, $value) {
+            return Store::where($field, $value)->first();
+        });
+    }
+
+    /**
+     * Log store access for analytics
+     */
+    protected function logStoreAccess(Store $store, Request $request): void
+    {
+        // Only log in production and for storefront routes
+        if (!app()->environment('production')) {
+            return;
+        }
+
+        // Asynchronously log the access (could dispatch a job)
+        try {
+            Log::channel('store_access')->info('Store accessed', [
+                'store_id' => $store->id,
+                'store_slug' => $store->slug,
+                'host' => $request->getHost(),
+                'path' => $request->path(),
+                'ip' => $request->ip(),
+                'user_agent' => substr($request->userAgent() ?? '', 0, 200),
+            ]);
+        } catch (\Exception $e) {
+            // Silently fail - don't break the request
+        }
+    }
+
+    /**
+     * Clear domain cache for a store
+     */
+    public static function clearStoreCache(Store $store): void
+    {
+        $baseDomain = config('services.forge.base_domain', 'time-luxe.com');
+        
+        Cache::forget("store:id:{$store->id}");
+        Cache::forget("store:slug:{$store->slug}");
+        Cache::forget("store:domain:{$store->slug}.{$baseDomain}");
+        
+        if ($store->subdomain) {
+            Cache::forget("store:domain:{$store->subdomain}.{$baseDomain}");
+        }
+        
+        if ($store->custom_domain) {
+            Cache::forget("store:domain:{$store->custom_domain}");
+            Cache::forget("store:domain:www.{$store->custom_domain}");
+        }
     }
 }

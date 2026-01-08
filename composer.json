@@ -9,6 +9,7 @@
         "guzzlehttp/guzzle": "^7.9",
         "hashids/hashids": "^5.0",
         "laravel/cashier": "^15.4",
+        "laravel/forge-sdk": "^3.24",
         "laravel/framework": "^11.36",
         "laravel/sanctum": "^4.0",
         "laravel/tinker": "^2.10",

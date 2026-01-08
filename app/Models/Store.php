@@ -44,6 +44,16 @@ class Store extends Model
         'database_created_at',
         'trial_ends_at',
         'trial_used',
+        // Theme & Deployment fields
+        'theme',
+        'theme_config',
+        'forge_site_id',
+        'forge_site_status',
+        'forge_site_created_at',
+        'deployment_path',
+        'last_deployed_at',
+        'ssl_enabled',
+        'ssl_expires_at',
     ];
 
     protected $appends = ['on_trial', 'trial_days_remaining', 'trial_expired_status'];
@@ -54,14 +64,19 @@ class Store extends Model
             'business_hours' => 'array',
             'settings' => 'array',
             'meta' => 'array',
+            'theme_config' => 'array',
             'is_active' => 'boolean',
             'is_featured' => 'boolean',
             'trial_used' => 'boolean',
+            'ssl_enabled' => 'boolean',
             'tax_rate' => 'decimal:2',
             'latitude' => 'decimal:8',
             'longitude' => 'decimal:8',
             'database_created_at' => 'datetime',
             'trial_ends_at' => 'datetime',
+            'forge_site_created_at' => 'datetime',
+            'last_deployed_at' => 'datetime',
+            'ssl_expires_at' => 'datetime',
         ];
     }
 

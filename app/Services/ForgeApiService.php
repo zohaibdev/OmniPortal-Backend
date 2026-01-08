@@ -1,516 +1,974 @@
 <?php
 
-declare(strict_types=1);
-
 namespace App\Services;
 
 use App\Models\Store;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
+use Laravel\Forge\Forge;
+use Laravel\Forge\Resources\Site;
+use Laravel\Forge\Resources\Database;
+use Exception;
 
 class ForgeApiService
 {
-    protected string $apiUrl = 'https://forge.laravel.com/api/v1';
-    protected ?string $apiToken = null;
-    protected ?int $serverId = null;
+    protected Forge $forge;
+    protected int $serverId;
+    protected string $defaultPhpVersion;
+    protected string $gitProvider;
+    protected string $gitRepository;
+    protected string $gitBranch;
 
     public function __construct()
     {
-        $this->apiToken = $this->getApiToken();
-        $this->serverId = (int) config('services.forge.server_id');
-    }
-
-    /**
-     * Get Forge API token from file or environment
-     */
-    protected function getApiToken(): ?string
-    {
-        // First try environment variable
-        if ($envToken = config('services.forge.api_token')) {
-            return $envToken;
-        }
-
-        // Then try file
-        $tokenFile = base_path('../forge-access-token.txt');
-        if (file_exists($tokenFile)) {
-            return trim(file_get_contents($tokenFile));
-        }
-
-        // Try alternate location
-        $altTokenFile = base_path('forge-access-token.txt');
-        if (file_exists($altTokenFile)) {
-            return trim(file_get_contents($altTokenFile));
-        }
-
-        Log::warning('Forge API token not found');
-        return null;
-    }
-
-    /**
-     * Check if Forge API is configured
-     */
-    public function isConfigured(): bool
-    {
-        return !empty($this->apiToken) && !empty($this->serverId);
-    }
-
-    /**
-     * Make authenticated request to Forge API
-     */
-    protected function request(string $method, string $endpoint, array $data = []): array
-    {
-        if (!$this->apiToken) {
-            throw new \Exception('Forge API token not configured');
-        }
-
-        $response = Http::withHeaders([
-            'Authorization' => 'Bearer ' . $this->apiToken,
-            'Accept' => 'application/json',
-            'Content-Type' => 'application/json',
-        ])->{$method}($this->apiUrl . $endpoint, $data);
-
-        if ($response->failed()) {
-            Log::error('Forge API error', [
-                'endpoint' => $endpoint,
-                'status' => $response->status(),
-                'body' => $response->body(),
-            ]);
-            throw new \Exception('Forge API error: ' . $response->body());
-        }
-
-        return $response->json() ?? [];
-    }
-
-    /**
-     * Create a new site on Forge
-     */
-    public function createSite(Store $store): array
-    {
-        $domain = $this->getStoreDomain($store);
+        $apiToken = config('deployment.forge.api_token');
         
-        Log::info('Creating Forge site', [
-            'store_id' => $store->id,
-            'domain' => $domain,
-        ]);
-
-        $response = $this->request('post', "/servers/{$this->serverId}/sites", [
-            'domain' => $domain,
-            'project_type' => 'html', // Static site for React SPA
-            'directory' => '/public',
-            'isolated' => false,
-            'php_version' => config('services.forge.php_version', 'php83'),
-        ]);
-
-        // Store Forge site ID in store meta
-        if (isset($response['site']['id'])) {
-            $meta = $store->meta ?? [];
-            $meta['forge_site_id'] = $response['site']['id'];
-            $store->update(['meta' => $meta]);
+        if (!$apiToken) {
+            throw new Exception('Forge API token not configured');
         }
 
-        return $response;
+        $this->forge = new Forge($apiToken);
+        $this->serverId = (int) config('deployment.forge.server_id');
+        $this->defaultPhpVersion = config('deployment.forge.php_version', 'php83');
+        $this->gitProvider = config('deployment.forge.git_provider', 'github');
+        $this->gitRepository = config('deployment.forge.repository', 'your-org/omniportal-storefront');
+        $this->gitBranch = config('deployment.forge.branch', 'main');
+    }
+
+    /**
+     * Create a new site on Forge server
+     */
+    public function createSite(Store $store): ?array
+    {
+        try {
+            $domain = $this->getStoreDomain($store);
+            
+            Log::info('Creating Forge site', [
+                'store_id' => $store->id,
+                'domain' => $domain,
+                'server_id' => $this->serverId,
+            ]);
+
+            $site = $this->forge->createSite($this->serverId, [
+                'domain' => $domain,
+                'project_type' => 'html', // Static site for React SPA
+                'directory' => '/dist',
+                'isolated' => false,
+                'php_version' => $this->defaultPhpVersion,
+            ]);
+
+            // Update store with Forge site info
+            $store->update([
+                'forge_site_id' => $site->id,
+                'forge_site_status' => 'created',
+                'forge_site_created_at' => now(),
+            ]);
+
+            Log::info('Forge site created successfully', [
+                'store_id' => $store->id,
+                'forge_site_id' => $site->id,
+            ]);
+
+            return [
+                'id' => $site->id,
+                'name' => $site->name,
+                'status' => $site->status,
+                'directory' => $site->directory,
+            ];
+
+        } catch (Exception $e) {
+            Log::error('Failed to create Forge site', [
+                'store_id' => $store->id,
+                'error' => $e->getMessage(),
+            ]);
+            
+            $store->update(['forge_site_status' => 'failed']);
+            
+            throw $e;
+        }
     }
 
     /**
      * Delete a site from Forge
      */
-    public function deleteSite(Store $store): bool
+    public function deleteSite(int $siteId): bool
     {
-        $siteId = $this->getForgeSiteId($store);
-        
-        if (!$siteId) {
-            Log::warning('No Forge site ID found for store', ['store_id' => $store->id]);
-            return true; // Consider it deleted if no ID exists
-        }
-
         try {
-            $this->request('delete', "/servers/{$this->serverId}/sites/{$siteId}");
-            
-            Log::info('Forge site deleted', [
-                'store_id' => $store->id,
-                'site_id' => $siteId,
-            ]);
+            Log::info('Deleting Forge site', ['site_id' => $siteId]);
+
+            $this->forge->deleteSite($this->serverId, $siteId);
+
+            Log::info('Forge site deleted successfully', ['site_id' => $siteId]);
 
             return true;
-        } catch (\Exception $e) {
+
+        } catch (Exception $e) {
             Log::error('Failed to delete Forge site', [
-                'store_id' => $store->id,
                 'site_id' => $siteId,
                 'error' => $e->getMessage(),
             ]);
-            return false;
+            
+            throw $e;
         }
     }
 
     /**
-     * Get site details from Forge
+     * Get site details
      */
-    public function getSite(Store $store): ?array
+    public function getSite(int $siteId): ?Site
     {
-        $siteId = $this->getForgeSiteId($store);
-        
-        if (!$siteId) {
-            return null;
-        }
-
         try {
-            return $this->request('get', "/servers/{$this->serverId}/sites/{$siteId}");
-        } catch (\Exception $e) {
+            return $this->forge->site($this->serverId, $siteId);
+        } catch (Exception $e) {
+            Log::error('Failed to get Forge site', [
+                'site_id' => $siteId,
+                'error' => $e->getMessage(),
+            ]);
+            
             return null;
         }
     }
 
     /**
-     * Install SSL certificate for site
+     * List all sites on server
      */
-    public function installSslCertificate(Store $store): array
+    public function listSites(): array
     {
-        $siteId = $this->getForgeSiteId($store);
-        
-        if (!$siteId) {
-            throw new \Exception('No Forge site ID found for store');
-        }
-
-        return $this->request('post', "/servers/{$this->serverId}/sites/{$siteId}/certificates/letsencrypt", [
-            'domains' => [$this->getStoreDomain($store)],
-        ]);
-    }
-
-    /**
-     * Add custom domain to Forge site
-     */
-    public function addCustomDomain(Store $store, string $customDomain): array
-    {
-        $siteId = $this->getForgeSiteId($store);
-        
-        if (!$siteId) {
-            throw new \Exception('No Forge site ID found for store');
-        }
-
-        // Update site aliases to include custom domain
-        return $this->request('put', "/servers/{$this->serverId}/sites/{$siteId}", [
-            'aliases' => [$customDomain],
-        ]);
-    }
-
-    /**
-     * Remove custom domain from Forge site
-     */
-    public function removeCustomDomain(Store $store, string $customDomain): array
-    {
-        $siteId = $this->getForgeSiteId($store);
-        
-        if (!$siteId) {
-            throw new \Exception('No Forge site ID found for store');
-        }
-
-        return $this->request('put', "/servers/{$this->serverId}/sites/{$siteId}", [
-            'aliases' => [],
-        ]);
-    }
-
-    /**
-     * Update site web directory (for custom deployments)
-     */
-    public function updateWebDirectory(Store $store, string $directory): array
-    {
-        $siteId = $this->getForgeSiteId($store);
-        
-        if (!$siteId) {
-            throw new \Exception('No Forge site ID found for store');
-        }
-
-        return $this->request('put', "/servers/{$this->serverId}/sites/{$siteId}", [
-            'directory' => $directory,
-        ]);
-    }
-
-    /**
-     * Get deployment script for site
-     */
-    public function getDeploymentScript(Store $store): ?string
-    {
-        $siteId = $this->getForgeSiteId($store);
-        
-        if (!$siteId) {
-            return null;
-        }
-
         try {
-            $response = $this->request('get', "/servers/{$this->serverId}/sites/{$siteId}/deployment/script");
-            return $response['script'] ?? null;
-        } catch (\Exception $e) {
-            return null;
+            return $this->forge->sites($this->serverId);
+        } catch (Exception $e) {
+            Log::error('Failed to list Forge sites', [
+                'error' => $e->getMessage(),
+            ]);
+            
+            return [];
         }
     }
 
     /**
-     * Update deployment script for site
+     * Install Git repository on site
      */
-    public function updateDeploymentScript(Store $store, string $script): array
+    public function installGitRepository(int $siteId, ?string $repository = null, ?string $branch = null): bool
     {
-        $siteId = $this->getForgeSiteId($store);
-        
-        if (!$siteId) {
-            throw new \Exception('No Forge site ID found for store');
-        }
+        try {
+            $repo = $repository ?? $this->gitRepository;
+            $branchName = $branch ?? $this->gitBranch;
 
-        return $this->request('put', "/servers/{$this->serverId}/sites/{$siteId}/deployment/script", [
-            'content' => $script,
-        ]);
+            Log::info('Installing Git repository on site', [
+                'site_id' => $siteId,
+                'repository' => $repo,
+                'branch' => $branchName,
+            ]);
+
+            $this->forge->installGitRepositoryOnSite($this->serverId, $siteId, [
+                'provider' => $this->gitProvider,
+                'repository' => $repo,
+                'branch' => $branchName,
+                'composer' => false,
+            ]);
+
+            Log::info('Git repository installed successfully', ['site_id' => $siteId]);
+
+            return true;
+
+        } catch (Exception $e) {
+            Log::error('Failed to install Git repository', [
+                'site_id' => $siteId,
+                'error' => $e->getMessage(),
+            ]);
+            
+            throw $e;
+        }
+    }
+
+    /**
+     * Update site deployment script
+     */
+    public function updateDeploymentScript(int $siteId, string $script): bool
+    {
+        try {
+            Log::info('Updating deployment script', ['site_id' => $siteId]);
+
+            $this->forge->updateSiteDeploymentScript($this->serverId, $siteId, $script);
+
+            Log::info('Deployment script updated successfully', ['site_id' => $siteId]);
+
+            return true;
+
+        } catch (Exception $e) {
+            Log::error('Failed to update deployment script', [
+                'site_id' => $siteId,
+                'error' => $e->getMessage(),
+            ]);
+            
+            throw $e;
+        }
+    }
+
+    /**
+     * Get site deployment script
+     */
+    public function getDeploymentScript(int $siteId): ?string
+    {
+        try {
+            return $this->forge->siteDeploymentScript($this->serverId, $siteId);
+        } catch (Exception $e) {
+            Log::error('Failed to get deployment script', [
+                'site_id' => $siteId,
+                'error' => $e->getMessage(),
+            ]);
+            
+            return null;
+        }
     }
 
     /**
      * Deploy site
      */
-    public function deploy(Store $store): array
+    public function deploySite(int $siteId): bool
     {
-        $siteId = $this->getForgeSiteId($store);
-        
-        if (!$siteId) {
-            throw new \Exception('No Forge site ID found for store');
+        try {
+            Log::info('Deploying site', ['site_id' => $siteId]);
+
+            $this->forge->deploySite($this->serverId, $siteId);
+
+            Log::info('Site deployment initiated successfully', ['site_id' => $siteId]);
+
+            return true;
+
+        } catch (Exception $e) {
+            Log::error('Failed to deploy site', [
+                'site_id' => $siteId,
+                'error' => $e->getMessage(),
+            ]);
+            
+            throw $e;
         }
-
-        return $this->request('post', "/servers/{$this->serverId}/sites/{$siteId}/deployment/deploy");
     }
 
     /**
-     * Get store domain based on configuration
+     * Get deployment log
      */
-    protected function getStoreDomain(Store $store): string
+    public function getDeploymentLog(int $siteId): ?string
     {
-        $baseDomain = config('services.forge.base_domain', 'time-luxe.com');
-        return $store->slug . '.' . $baseDomain;
+        try {
+            return $this->forge->siteDeploymentLog($this->serverId, $siteId);
+        } catch (Exception $e) {
+            Log::error('Failed to get deployment log', [
+                'site_id' => $siteId,
+                'error' => $e->getMessage(),
+            ]);
+            
+            return null;
+        }
     }
 
     /**
-     * Get Forge site ID from store meta
+     * Enable quick deploy (auto-deploy on push)
      */
-    protected function getForgeSiteId(Store $store): ?int
+    public function enableQuickDeploy(int $siteId): bool
     {
-        return $store->meta['forge_site_id'] ?? null;
+        try {
+            Log::info('Enabling quick deploy', ['site_id' => $siteId]);
+
+            $this->forge->enableQuickDeploy($this->serverId, $siteId);
+
+            Log::info('Quick deploy enabled successfully', ['site_id' => $siteId]);
+
+            return true;
+
+        } catch (Exception $e) {
+            Log::error('Failed to enable quick deploy', [
+                'site_id' => $siteId,
+                'error' => $e->getMessage(),
+            ]);
+            
+            throw $e;
+        }
     }
 
     /**
-     * List all sites on the server
+     * Disable quick deploy
      */
-    public function listSites(): array
+    public function disableQuickDeploy(int $siteId): bool
     {
-        return $this->request('get', "/servers/{$this->serverId}/sites");
+        try {
+            $this->forge->disableQuickDeploy($this->serverId, $siteId);
+            return true;
+        } catch (Exception $e) {
+            Log::error('Failed to disable quick deploy', [
+                'site_id' => $siteId,
+                'error' => $e->getMessage(),
+            ]);
+            
+            throw $e;
+        }
+    }
+
+    /**
+     * Create SSL certificate (Let's Encrypt)
+     */
+    public function createSslCertificate(int $siteId, array $domains = []): bool
+    {
+        try {
+            Log::info('Creating SSL certificate', [
+                'site_id' => $siteId,
+                'domains' => $domains,
+            ]);
+
+            $this->forge->obtainLetsEncryptCertificate($this->serverId, $siteId, [
+                'domains' => $domains,
+            ]);
+
+            Log::info('SSL certificate creation initiated', ['site_id' => $siteId]);
+
+            return true;
+
+        } catch (Exception $e) {
+            Log::error('Failed to create SSL certificate', [
+                'site_id' => $siteId,
+                'error' => $e->getMessage(),
+            ]);
+            
+            throw $e;
+        }
+    }
+
+    /**
+     * Get SSL certificates for a site
+     */
+    public function getSslCertificates(int $siteId): array
+    {
+        try {
+            return $this->forge->certificates($this->serverId, $siteId);
+        } catch (Exception $e) {
+            Log::error('Failed to get SSL certificates', [
+                'site_id' => $siteId,
+                'error' => $e->getMessage(),
+            ]);
+            
+            return [];
+        }
+    }
+
+    /**
+     * Create environment file for site
+     */
+    public function updateEnvironmentFile(int $siteId, string $content): bool
+    {
+        try {
+            Log::info('Updating environment file', ['site_id' => $siteId]);
+
+            $this->forge->updateSiteEnvironmentFile($this->serverId, $siteId, $content);
+
+            Log::info('Environment file updated successfully', ['site_id' => $siteId]);
+
+            return true;
+
+        } catch (Exception $e) {
+            Log::error('Failed to update environment file', [
+                'site_id' => $siteId,
+                'error' => $e->getMessage(),
+            ]);
+            
+            throw $e;
+        }
+    }
+
+    /**
+     * Get environment file content
+     */
+    public function getEnvironmentFile(int $siteId): ?string
+    {
+        try {
+            return $this->forge->siteEnvironmentFile($this->serverId, $siteId);
+        } catch (Exception $e) {
+            Log::error('Failed to get environment file', [
+                'site_id' => $siteId,
+                'error' => $e->getMessage(),
+            ]);
+            
+            return null;
+        }
+    }
+
+    /**
+     * Create a database on the server
+     */
+    public function createDatabase(string $name): ?Database
+    {
+        try {
+            Log::info('Creating database', ['name' => $name]);
+
+            $database = $this->forge->createDatabase($this->serverId, [
+                'name' => $name,
+            ]);
+
+            Log::info('Database created successfully', [
+                'name' => $name,
+                'id' => $database->id,
+            ]);
+
+            return $database;
+
+        } catch (Exception $e) {
+            Log::error('Failed to create database', [
+                'name' => $name,
+                'error' => $e->getMessage(),
+            ]);
+            
+            throw $e;
+        }
+    }
+
+    /**
+     * Delete a database from the server
+     */
+    public function deleteDatabase(int $databaseId): bool
+    {
+        try {
+            Log::info('Deleting database', ['database_id' => $databaseId]);
+
+            $this->forge->deleteDatabase($this->serverId, $databaseId);
+
+            Log::info('Database deleted successfully', ['database_id' => $databaseId]);
+
+            return true;
+
+        } catch (Exception $e) {
+            Log::error('Failed to delete database', [
+                'database_id' => $databaseId,
+                'error' => $e->getMessage(),
+            ]);
+            
+            throw $e;
+        }
+    }
+
+    /**
+     * List all databases on server
+     */
+    public function listDatabases(): array
+    {
+        try {
+            return $this->forge->databases($this->serverId);
+        } catch (Exception $e) {
+            Log::error('Failed to list databases', [
+                'error' => $e->getMessage(),
+            ]);
+            
+            return [];
+        }
+    }
+
+    /**
+     * Create a database user
+     */
+    public function createDatabaseUser(string $name, string $password, array $databases = []): ?object
+    {
+        try {
+            Log::info('Creating database user', ['name' => $name]);
+
+            $user = $this->forge->createDatabaseUser($this->serverId, [
+                'name' => $name,
+                'password' => $password,
+                'databases' => $databases,
+            ]);
+
+            Log::info('Database user created successfully', ['name' => $name]);
+
+            return $user;
+
+        } catch (Exception $e) {
+            Log::error('Failed to create database user', [
+                'name' => $name,
+                'error' => $e->getMessage(),
+            ]);
+            
+            throw $e;
+        }
+    }
+
+    /**
+     * Delete a database user
+     */
+    public function deleteDatabaseUser(int $userId): bool
+    {
+        try {
+            $this->forge->deleteDatabaseUser($this->serverId, $userId);
+            return true;
+        } catch (Exception $e) {
+            Log::error('Failed to delete database user', [
+                'user_id' => $userId,
+                'error' => $e->getMessage(),
+            ]);
+            
+            throw $e;
+        }
+    }
+
+    /**
+     * Add Nginx redirect rule
+     */
+    public function createRedirectRule(int $siteId, string $from, string $to, string $type = 'redirect'): bool
+    {
+        try {
+            Log::info('Creating redirect rule', [
+                'site_id' => $siteId,
+                'from' => $from,
+                'to' => $to,
+            ]);
+
+            $this->forge->createRedirectRule($this->serverId, $siteId, [
+                'from' => $from,
+                'to' => $to,
+                'type' => $type,
+            ]);
+
+            Log::info('Redirect rule created successfully', ['site_id' => $siteId]);
+
+            return true;
+
+        } catch (Exception $e) {
+            Log::error('Failed to create redirect rule', [
+                'site_id' => $siteId,
+                'error' => $e->getMessage(),
+            ]);
+            
+            throw $e;
+        }
+    }
+
+    /**
+     * Get redirect rules for a site
+     */
+    public function getRedirectRules(int $siteId): array
+    {
+        try {
+            return $this->forge->redirectRules($this->serverId, $siteId);
+        } catch (Exception $e) {
+            Log::error('Failed to get redirect rules', [
+                'site_id' => $siteId,
+                'error' => $e->getMessage(),
+            ]);
+            
+            return [];
+        }
+    }
+
+    /**
+     * Update Nginx configuration
+     */
+    public function updateNginxConfiguration(int $siteId, string $content): bool
+    {
+        try {
+            Log::info('Updating Nginx configuration', ['site_id' => $siteId]);
+
+            $this->forge->updateSiteNginxFile($this->serverId, $siteId, $content);
+
+            Log::info('Nginx configuration updated successfully', ['site_id' => $siteId]);
+
+            return true;
+
+        } catch (Exception $e) {
+            Log::error('Failed to update Nginx configuration', [
+                'site_id' => $siteId,
+                'error' => $e->getMessage(),
+            ]);
+            
+            throw $e;
+        }
+    }
+
+    /**
+     * Get Nginx configuration
+     */
+    public function getNginxConfiguration(int $siteId): ?string
+    {
+        try {
+            return $this->forge->siteNginxFile($this->serverId, $siteId);
+        } catch (Exception $e) {
+            Log::error('Failed to get Nginx configuration', [
+                'site_id' => $siteId,
+                'error' => $e->getMessage(),
+            ]);
+            
+            return null;
+        }
     }
 
     /**
      * Get server details
      */
-    public function getServer(): array
-    {
-        return $this->request('get', "/servers/{$this->serverId}");
-    }
-
-    // ==========================================
-    // DATABASE MANAGEMENT
-    // ==========================================
-
-    /**
-     * Create a database on Forge server
-     */
-    public function createDatabase(string $databaseName): array
-    {
-        Log::info('Creating Forge database', [
-            'database' => $databaseName,
-        ]);
-
-        $response = $this->request('post', "/servers/{$this->serverId}/databases", [
-            'name' => $databaseName,
-            'user' => config('services.forge.database_user', 'forge'),
-        ]);
-
-        Log::info('Forge database created', [
-            'database' => $databaseName,
-            'response' => $response,
-        ]);
-
-        return $response;
-    }
-
-    /**
-     * Delete a database from Forge server
-     */
-    public function deleteDatabase(string $databaseName): bool
+    public function getServer(): ?object
     {
         try {
-            // First, find the database ID
-            $databaseId = $this->getDatabaseId($databaseName);
-            
-            if (!$databaseId) {
-                Log::warning('Forge database not found for deletion', [
-                    'database' => $databaseName,
-                ]);
-                return true; // Consider it deleted if not found
-            }
-
-            $this->request('delete', "/servers/{$this->serverId}/databases/{$databaseId}");
-            
-            Log::info('Forge database deleted', [
-                'database' => $databaseName,
-                'database_id' => $databaseId,
-            ]);
-
-            return true;
-        } catch (\Exception $e) {
-            Log::error('Failed to delete Forge database', [
-                'database' => $databaseName,
+            return $this->forge->server($this->serverId);
+        } catch (Exception $e) {
+            Log::error('Failed to get server', [
+                'server_id' => $this->serverId,
                 'error' => $e->getMessage(),
             ]);
-            return false;
-        }
-    }
-
-    /**
-     * List all databases on the server
-     */
-    public function listDatabases(): array
-    {
-        return $this->request('get', "/servers/{$this->serverId}/databases");
-    }
-
-    /**
-     * Get database ID by name
-     */
-    public function getDatabaseId(string $databaseName): ?int
-    {
-        try {
-            $response = $this->listDatabases();
-            $databases = $response['databases'] ?? [];
-
-            foreach ($databases as $database) {
-                if ($database['name'] === $databaseName) {
-                    return $database['id'];
-                }
-            }
-
-            return null;
-        } catch (\Exception $e) {
-            Log::error('Failed to get database ID', [
-                'database' => $databaseName,
-                'error' => $e->getMessage(),
-            ]);
+            
             return null;
         }
     }
 
     /**
-     * Check if a database exists on Forge
+     * List all servers
      */
-    public function databaseExists(string $databaseName): bool
-    {
-        return $this->getDatabaseId($databaseName) !== null;
-    }
-
-    /**
-     * Create a database for a store
-     */
-    public function createStoreDatabase(Store $store, string $databaseName): array
-    {
-        $response = $this->createDatabase($databaseName);
-
-        // Store Forge database ID in store meta
-        if (isset($response['database']['id'])) {
-            $meta = $store->meta ?? [];
-            $meta['forge_database_id'] = $response['database']['id'];
-            $store->update(['meta' => $meta]);
-        }
-
-        return $response;
-    }
-
-    /**
-     * Delete a store's database
-     */
-    public function deleteStoreDatabase(Store $store): bool
-    {
-        if (!$store->database_name) {
-            return true;
-        }
-
-        // Try to get ID from meta first
-        $databaseId = $store->meta['forge_database_id'] ?? null;
-
-        if ($databaseId) {
-            try {
-                $this->request('delete', "/servers/{$this->serverId}/databases/{$databaseId}");
-                
-                Log::info('Forge store database deleted', [
-                    'store_id' => $store->id,
-                    'database_id' => $databaseId,
-                ]);
-
-                return true;
-            } catch (\Exception $e) {
-                Log::warning('Failed to delete by ID, trying by name', [
-                    'database_id' => $databaseId,
-                    'error' => $e->getMessage(),
-                ]);
-            }
-        }
-
-        // Fall back to deletion by name
-        return $this->deleteDatabase($store->database_name);
-    }
-
-    // ==========================================
-    // DATABASE USERS MANAGEMENT
-    // ==========================================
-
-    /**
-     * Create a database user on Forge
-     */
-    public function createDatabaseUser(string $username, string $password, array $databases = []): array
-    {
-        Log::info('Creating Forge database user', [
-            'username' => $username,
-        ]);
-
-        return $this->request('post', "/servers/{$this->serverId}/database-users", [
-            'name' => $username,
-            'password' => $password,
-            'databases' => $databases,
-        ]);
-    }
-
-    /**
-     * Delete a database user from Forge
-     */
-    public function deleteDatabaseUser(int $userId): bool
+    public function listServers(): array
     {
         try {
-            $this->request('delete', "/servers/{$this->serverId}/database-users/{$userId}");
-            return true;
-        } catch (\Exception $e) {
-            Log::error('Failed to delete Forge database user', [
-                'user_id' => $userId,
+            return $this->forge->servers();
+        } catch (Exception $e) {
+            Log::error('Failed to list servers', [
                 'error' => $e->getMessage(),
             ]);
-            return false;
+            
+            return [];
         }
     }
 
     /**
-     * List all database users on the server
+     * Run a command on the server
      */
-    public function listDatabaseUsers(): array
+    public function runCommand(string $command): ?object
     {
-        return $this->request('get', "/servers/{$this->serverId}/database-users");
+        try {
+            Log::info('Running command on server', ['command' => $command]);
+
+            $result = $this->forge->executeSiteCommand($this->serverId, null, [
+                'command' => $command,
+            ]);
+
+            return $result;
+
+        } catch (Exception $e) {
+            Log::error('Failed to run command', [
+                'command' => $command,
+                'error' => $e->getMessage(),
+            ]);
+            
+            throw $e;
+        }
     }
 
     /**
-     * Update database user's accessible databases
+     * Create a scheduled job (cron)
      */
-    public function updateDatabaseUserAccess(int $userId, array $databases): array
+    public function createScheduledJob(string $command, string $frequency, ?string $user = null): ?object
     {
-        return $this->request('put', "/servers/{$this->serverId}/database-users/{$userId}", [
-            'databases' => $databases,
-        ]);
+        try {
+            Log::info('Creating scheduled job', [
+                'command' => $command,
+                'frequency' => $frequency,
+            ]);
+
+            $job = $this->forge->createJob($this->serverId, [
+                'command' => $command,
+                'frequency' => $frequency,
+                'user' => $user ?? 'forge',
+            ]);
+
+            Log::info('Scheduled job created successfully');
+
+            return $job;
+
+        } catch (Exception $e) {
+            Log::error('Failed to create scheduled job', [
+                'error' => $e->getMessage(),
+            ]);
+            
+            throw $e;
+        }
+    }
+
+    /**
+     * List scheduled jobs
+     */
+    public function listScheduledJobs(): array
+    {
+        try {
+            return $this->forge->jobs($this->serverId);
+        } catch (Exception $e) {
+            Log::error('Failed to list scheduled jobs', [
+                'error' => $e->getMessage(),
+            ]);
+            
+            return [];
+        }
+    }
+
+    /**
+     * Delete a scheduled job
+     */
+    public function deleteScheduledJob(int $jobId): bool
+    {
+        try {
+            $this->forge->deleteJob($this->serverId, $jobId);
+            return true;
+        } catch (Exception $e) {
+            Log::error('Failed to delete scheduled job', [
+                'job_id' => $jobId,
+                'error' => $e->getMessage(),
+            ]);
+            
+            throw $e;
+        }
+    }
+
+    /**
+     * Create a daemon (worker)
+     */
+    public function createDaemon(string $command, ?string $directory = null): ?object
+    {
+        try {
+            Log::info('Creating daemon', ['command' => $command]);
+
+            $daemon = $this->forge->createDaemon($this->serverId, [
+                'command' => $command,
+                'user' => 'forge',
+                'directory' => $directory,
+            ]);
+
+            Log::info('Daemon created successfully');
+
+            return $daemon;
+
+        } catch (Exception $e) {
+            Log::error('Failed to create daemon', [
+                'error' => $e->getMessage(),
+            ]);
+            
+            throw $e;
+        }
+    }
+
+    /**
+     * List daemons
+     */
+    public function listDaemons(): array
+    {
+        try {
+            return $this->forge->daemons($this->serverId);
+        } catch (Exception $e) {
+            Log::error('Failed to list daemons', [
+                'error' => $e->getMessage(),
+            ]);
+            
+            return [];
+        }
+    }
+
+    /**
+     * Delete a daemon
+     */
+    public function deleteDaemon(int $daemonId): bool
+    {
+        try {
+            $this->forge->deleteDaemon($this->serverId, $daemonId);
+            return true;
+        } catch (Exception $e) {
+            Log::error('Failed to delete daemon', [
+                'daemon_id' => $daemonId,
+                'error' => $e->getMessage(),
+            ]);
+            
+            throw $e;
+        }
+    }
+
+    /**
+     * Restart a daemon
+     */
+    public function restartDaemon(int $daemonId): bool
+    {
+        try {
+            $this->forge->restartDaemon($this->serverId, $daemonId);
+            return true;
+        } catch (Exception $e) {
+            Log::error('Failed to restart daemon', [
+                'daemon_id' => $daemonId,
+                'error' => $e->getMessage(),
+            ]);
+            
+            throw $e;
+        }
+    }
+
+    /**
+     * Provision complete store infrastructure
+     */
+    public function provisionStore(Store $store): array
+    {
+        $result = [
+            'site' => null,
+            'database' => null,
+            'ssl' => false,
+            'deployed' => false,
+        ];
+
+        try {
+            // 1. Create site
+            $result['site'] = $this->createSite($store);
+            $siteId = $result['site']['id'];
+
+            // 2. Install Git repository
+            $this->installGitRepository($siteId);
+
+            // 3. Set up deployment script
+            $deployScript = $this->generateDeploymentScript($store);
+            $this->updateDeploymentScript($siteId, $deployScript);
+
+            // 4. Set environment variables
+            $envContent = $this->generateEnvironmentFile($store);
+            $this->updateEnvironmentFile($siteId, $envContent);
+
+            // 5. Deploy the site
+            $this->deploySite($siteId);
+            $result['deployed'] = true;
+
+            // 6. Enable quick deploy
+            $this->enableQuickDeploy($siteId);
+
+            // 7. Create SSL certificate
+            $domain = $this->getStoreDomain($store);
+            $this->createSslCertificate($siteId, [$domain]);
+            $result['ssl'] = true;
+
+            // Update store status
+            $store->update([
+                'forge_site_status' => 'active',
+                'ssl_enabled' => true,
+                'last_deployed_at' => now(),
+            ]);
+
+            return $result;
+
+        } catch (Exception $e) {
+            Log::error('Failed to provision store', [
+                'store_id' => $store->id,
+                'error' => $e->getMessage(),
+                'result' => $result,
+            ]);
+
+            throw $e;
+        }
+    }
+
+    /**
+     * Delete complete store infrastructure
+     */
+    public function deprovisionStore(Store $store): bool
+    {
+        try {
+            if ($store->forge_site_id) {
+                $this->deleteSite($store->forge_site_id);
+            }
+
+            // Update store
+            $store->update([
+                'forge_site_id' => null,
+                'forge_site_status' => null,
+                'forge_site_created_at' => null,
+                'ssl_enabled' => false,
+                'ssl_expires_at' => null,
+            ]);
+
+            return true;
+
+        } catch (Exception $e) {
+            Log::error('Failed to deprovision store', [
+                'store_id' => $store->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            throw $e;
+        }
+    }
+
+    /**
+     * Generate deployment script for a store
+     */
+    protected function generateDeploymentScript(Store $store): string
+    {
+        $domain = $this->getStoreDomain($store);
+        
+        return <<<BASH
+cd /home/forge/{$domain}
+git pull origin {$this->gitBranch}
+
+# Install dependencies
+npm ci
+
+# Build with store-specific configuration
+VITE_STORE_SLUG={$store->slug} \
+VITE_API_URL={$this->getApiUrl()} \
+npm run build
+
+# Ensure correct permissions
+chown -R forge:forge dist
+BASH;
+    }
+
+    /**
+     * Generate environment file content for a store
+     */
+    protected function generateEnvironmentFile(Store $store): string
+    {
+        return <<<ENV
+VITE_STORE_SLUG={$store->slug}
+VITE_STORE_ID={$store->id}
+VITE_API_URL={$this->getApiUrl()}
+VITE_STORE_NAME={$store->name}
+ENV;
+    }
+
+    /**
+     * Get the domain for a store
+     */
+    protected function getStoreDomain(Store $store): string
+    {
+        // Check for custom domain first
+        if ($store->custom_domain) {
+            return $store->custom_domain;
+        }
+
+        // Use subdomain format
+        $baseDomain = config('deployment.base_domain', 'time-luxe.com');
+        return "{$store->slug}.{$baseDomain}";
+    }
+
+    /**
+     * Get the API URL
+     */
+    protected function getApiUrl(): string
+    {
+        return config('deployment.api_url', 'https://api.time-luxe.com');
+    }
+
+    /**
+     * Get the Forge SDK instance
+     */
+    public function getForgeInstance(): Forge
+    {
+        return $this->forge;
+    }
+
+    /**
+     * Set a different server ID (for multi-server setups)
+     */
+    public function setServerId(int $serverId): self
+    {
+        $this->serverId = $serverId;
+        return $this;
+    }
+
+    /**
+     * Get current server ID
+     */
+    public function getServerId(): int
+    {
+        return $this->serverId;
     }
 }

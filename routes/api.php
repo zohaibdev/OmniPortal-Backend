@@ -68,6 +68,7 @@ Route::middleware(['auth:sanctum'])->group(function () {
         Route::post('stores/{store}/redeploy', [\App\Http\Controllers\Api\Admin\StoreController::class, 'redeploy']);
         Route::get('stores/{store}/deployment-status', [\App\Http\Controllers\Api\Admin\StoreController::class, 'deploymentStatus']);
         Route::post('stores/{store}/provision-forge', [\App\Http\Controllers\Api\Admin\StoreController::class, 'provisionForge']);
+        Route::put('stores/{store}/domain', [\App\Http\Controllers\Api\Admin\StoreController::class, 'updateDomain']);
 
         // Owners management
         Route::apiResource('owners', \App\Http\Controllers\Api\Admin\OwnerController::class);
@@ -204,6 +205,30 @@ Route::prefix('owner')->middleware(['auth:sanctum', 'is.owner'])->group(function
         Route::post('branding/og-image', [\App\Http\Controllers\Api\Owner\BrandingController::class, 'uploadOgImage']);
         Route::put('branding/custom-css', [\App\Http\Controllers\Api\Owner\BrandingController::class, 'updateCustomCss']);
         Route::post('branding/reset', [\App\Http\Controllers\Api\Owner\BrandingController::class, 'reset']);
+
+        // Theme Management
+        Route::prefix('theme')->group(function () {
+            Route::get('/available', [\App\Http\Controllers\Api\Owner\ThemeController::class, 'index']);
+            Route::get('/', [\App\Http\Controllers\Api\Owner\ThemeController::class, 'show']);
+            Route::put('/', [\App\Http\Controllers\Api\Owner\ThemeController::class, 'update']);
+            Route::put('/config', [\App\Http\Controllers\Api\Owner\ThemeController::class, 'updateConfig']);
+            Route::get('/preview-css', [\App\Http\Controllers\Api\Owner\ThemeController::class, 'previewCss']);
+            Route::post('/reset', [\App\Http\Controllers\Api\Owner\ThemeController::class, 'reset']);
+            Route::post('/deploy', [\App\Http\Controllers\Api\Owner\ThemeController::class, 'deploy']);
+        });
+
+        // CMS Management
+        Route::prefix('cms')->group(function () {
+            Route::get('/overview', [\App\Http\Controllers\Api\Owner\CMSController::class, 'overview']);
+            Route::get('/menu', [\App\Http\Controllers\Api\Owner\CMSController::class, 'getMenu']);
+            Route::put('/menu', [\App\Http\Controllers\Api\Owner\CMSController::class, 'updateMenu']);
+            Route::get('/footer', [\App\Http\Controllers\Api\Owner\CMSController::class, 'getFooter']);
+            Route::put('/footer', [\App\Http\Controllers\Api\Owner\CMSController::class, 'updateFooter']);
+            Route::get('/homepage', [\App\Http\Controllers\Api\Owner\CMSController::class, 'getHomepage']);
+            Route::put('/homepage', [\App\Http\Controllers\Api\Owner\CMSController::class, 'updateHomepage']);
+            Route::get('/seo', [\App\Http\Controllers\Api\Owner\CMSController::class, 'getSeo']);
+            Route::put('/seo', [\App\Http\Controllers\Api\Owner\CMSController::class, 'updateSeo']);
+        });
 
         // File Manager
         Route::prefix('files')->group(function () {
