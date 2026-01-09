@@ -14,21 +14,12 @@ class StoreService
      */
     public const TRIAL_DAYS = 7;
 
-    protected ForgeApiService $forgeService;
     protected TenantDatabaseService $tenantService;
-    protected StoreDeploymentService $deploymentService;
-    protected StoreBrandingService $brandingService;
 
     public function __construct(
-        ForgeApiService $forgeService,
-        TenantDatabaseService $tenantService,
-        StoreDeploymentService $deploymentService,
-        StoreBrandingService $brandingService
+        TenantDatabaseService $tenantService
     ) {
-        $this->forgeService = $forgeService;
         $this->tenantService = $tenantService;
-        $this->deploymentService = $deploymentService;
-        $this->brandingService = $brandingService;
     }
 
     /**
@@ -55,31 +46,12 @@ class StoreService
     }
 
     /**
-     * Create store with full provisioning (Forge site + deployment)
+     * Create store (storefront deployment disabled)
      */
     public function createWithProvisioning(Owner $owner, array $data): Store
     {
-        // Create store record (triggers observer for tenant DB and branding folder)
-        $store = $this->create($owner, $data);
-
-        // Create Forge site if configured
-        if ($this->forgeService->isConfigured() && config('deployment.auto_create_forge_site', true)) {
-            try {
-                $this->forgeService->createSite($store);
-            } catch (\Exception $e) {
-                Log::error('Failed to create Forge site', [
-                    'store_id' => $store->id,
-                    'error' => $e->getMessage(),
-                ]);
-            }
-        }
-
-        // Deploy storefront files
-        if (config('deployment.auto_deploy_storefront', true)) {
-            $this->deploymentService->deployStorefront($store);
-        }
-
-        return $store;
+        // Create store record (triggers observer for tenant DB)
+        return $this->create($owner, $data);
     }
 
     /**
@@ -121,37 +93,18 @@ class StoreService
         }
 
         $store->update($data);
-        
-        // Update deployment config if store details changed
-        if ($store->wasChanged(['name', 'currency', 'timezone', 'locale', 'custom_domain'])) {
-            $this->deploymentService->updateStoreConfig($store);
-        }
 
         return $store->fresh();
     }
 
     /**
-     * Handle custom domain change
+     * Handle custom domain change (local development only)
      */
     protected function handleCustomDomainChange(Store $store, ?string $newDomain): void
     {
-        if (!$this->forgeService->isConfigured()) {
-            return;
-        }
-
-        try {
-            if ($store->custom_domain) {
-                $this->forgeService->removeCustomDomain($store, $store->custom_domain);
-            }
-            if ($newDomain) {
-                $this->forgeService->addCustomDomain($store, $newDomain);
-            }
-        } catch (\Exception $e) {
-            Log::error('Failed to update Forge custom domain', [
-                'store_id' => $store->id,
-                'error' => $e->getMessage(),
-            ]);
-        }
+        // Custom domain management disabled for local development
+        // Re-enable for production deployment if needed
+        return;
     }
 
     /**
@@ -170,23 +123,9 @@ class StoreService
                 'database' => $databaseName,
             ]);
 
-            // 1. Delete Forge site (if configured)
-            if ($this->forgeService->isConfigured() && $store->forge_site_id) {
-                try {
-                    $this->forgeService->deleteSite($store);
-                    Log::info('Forge site deleted', ['store_id' => $storeId]);
-                } catch (\Exception $e) {
-                    Log::warning('Failed to delete Forge site', [
-                        'store_id' => $storeId,
-                        'error' => $e->getMessage(),
-                    ]);
-                }
-            }
-
-            // 2. Remove deployment folder (/stores/{slug}/)
+            // 1. Remove deployment folder (/stores/{slug}/)
             try {
-                $this->deploymentService->removeStorefront($store);
-                Log::info('Deployment folder deleted', ['store_id' => $storeId]);
+                Log::info('Storefront deployment disabled');
             } catch (\Exception $e) {
                 Log::warning('Failed to delete deployment folder', [
                     'store_id' => $storeId,
@@ -196,8 +135,7 @@ class StoreService
 
             // 3. Delete branding/storage folders
             try {
-                $this->brandingService->deleteStoreFolder($store);
-                Log::info('Branding folders deleted', ['store_id' => $storeId]);
+                Log::info('Branding service disabled');
             } catch (\Exception $e) {
                 Log::warning('Failed to delete branding folders', [
                     'store_id' => $storeId,
@@ -280,19 +218,22 @@ class StoreService
     }
 
     /**
-     * Redeploy store frontend
+     * Rebuild storefront (disabled - storefront removed)
      */
-    public function redeploy(Store $store): bool
+    public function rebuildStorefront(Store $store): bool
     {
-        return $this->deploymentService->rebuildStorefront($store);
+        return false;
     }
 
     /**
-     * Get store deployment status
+     * Get deployment status (disabled)
      */
     public function getDeploymentStatus(Store $store): array
     {
-        return $this->deploymentService->getDeploymentStatus($store);
+        return [
+            'status' => 'storefront_disabled',
+            'message' => 'Storefront functionality has been removed',
+        ];
     }
 
     /**

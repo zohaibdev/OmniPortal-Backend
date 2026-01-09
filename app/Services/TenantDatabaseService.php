@@ -12,27 +12,6 @@ use Illuminate\Support\Str;
 
 class TenantDatabaseService
 {
-    protected ?ForgeApiService $forgeService = null;
-
-    public function __construct()
-    {
-        // Initialize Forge service for production database management
-        if ($this->shouldUseForgeApi()) {
-            $this->forgeService = app(ForgeApiService::class);
-        }
-    }
-
-    /**
-     * Determine if we should use Forge API for database operations
-     */
-    protected function shouldUseForgeApi(): bool
-    {
-        // Use Forge API in production when configured
-        return app()->environment('production') 
-            && config('services.forge.api_token') 
-            && config('services.forge.server_id');
-    }
-
     /**
      * Create a new tenant database for a store owner
      */
@@ -41,12 +20,8 @@ class TenantDatabaseService
         $databaseName = $this->generateDatabaseName($store);
         
         try {
-            // Create the database (either locally or via Forge)
-            if ($this->shouldUseForgeApi() && $this->forgeService?->isConfigured()) {
-                $this->createDatabaseViaForge($store, $databaseName);
-            } else {
-                $this->createDatabaseLocally($databaseName);
-            }
+            // Create the database locally
+            $this->createDatabaseLocally($databaseName);
             
             // Update store with database name
             $store->update([
@@ -62,7 +37,6 @@ class TenantDatabaseService
             Log::info("Tenant database created successfully", [
                 'store_id' => $store->id,
                 'database' => $databaseName,
-                'method' => $this->shouldUseForgeApi() ? 'forge_api' : 'local',
             ]);
             
             return true;
@@ -87,34 +61,6 @@ class TenantDatabaseService
         DB::statement("CREATE DATABASE IF NOT EXISTS `{$databaseName}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
         
         Log::info("Database created locally", ['database' => $databaseName]);
-    }
-
-    /**
-     * Create database via Forge API
-     */
-    protected function createDatabaseViaForge(Store $store, string $databaseName): void
-    {
-        if (!$this->forgeService) {
-            throw new \Exception('Forge API service not initialized');
-        }
-
-        // Check if database already exists
-        if ($this->forgeService->databaseExists($databaseName)) {
-            Log::info("Forge database already exists", ['database' => $databaseName]);
-            return;
-        }
-
-        // Create database via Forge API
-        $response = $this->forgeService->createStoreDatabase($store, $databaseName);
-        
-        if (!isset($response['database'])) {
-            throw new \Exception('Failed to create database via Forge API: ' . json_encode($response));
-        }
-
-        Log::info("Database created via Forge API", [
-            'database' => $databaseName,
-            'forge_id' => $response['database']['id'] ?? null,
-        ]);
     }
 
     /**
@@ -190,10 +136,6 @@ class TenantDatabaseService
     public function dropTenantDatabase(string $databaseName): bool
     {
         try {
-            if ($this->shouldUseForgeApi() && $this->forgeService?->isConfigured()) {
-                return $this->forgeService->deleteDatabase($databaseName);
-            }
-            
             // Local deletion
             DB::statement("DROP DATABASE IF EXISTS `{$databaseName}`");
             
@@ -209,7 +151,7 @@ class TenantDatabaseService
     }
 
     /**
-     * Delete tenant database for a store (with Forge support)
+     * Delete tenant database for a store
      */
     public function deleteTenantDatabase(Store $store): bool
     {
@@ -218,12 +160,7 @@ class TenantDatabaseService
         }
 
         try {
-            // Try Forge API first if configured
-            if ($this->shouldUseForgeApi() && $this->forgeService?->isConfigured()) {
-                $result = $this->forgeService->deleteStoreDatabase($store);
-            } else {
-                $result = $this->dropTenantDatabase($store->database_name);
-            }
+            $result = $this->dropTenantDatabase($store->database_name);
 
             if ($result) {
                 $store->update([
@@ -233,7 +170,6 @@ class TenantDatabaseService
 
                 Log::info("Tenant database deleted", [
                     'store_id' => $store->id,
-                    'method' => $this->shouldUseForgeApi() ? 'forge_api' : 'local',
                 ]);
             }
 

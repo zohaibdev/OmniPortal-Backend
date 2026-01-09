@@ -193,8 +193,8 @@ class ThemeService
     public function getStoreDeploymentPath(Store $store): string
     {
         if (app()->environment('production')) {
-            $baseDomain = config('services.forge.base_domain', 'time-luxe.com');
-            return '/home/forge/' . $store->slug . '.' . $baseDomain;
+            $baseDomain = config('deployment.base_domain', 'localhost');
+            return '/var/www/' . $store->slug . '.' . $baseDomain;
         }
         
         return config('deployment.stores_path', base_path('../stores')) . '/' . $store->slug;

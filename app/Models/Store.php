@@ -14,6 +14,7 @@ class Store extends Model
         'owner_id',
         'name',
         'slug',
+        'business_type',
         'description',
         'logo',
         'banner',
@@ -44,6 +45,13 @@ class Store extends Model
         'database_created_at',
         'trial_ends_at',
         'trial_used',
+        // WhatsApp Configuration
+        'whatsapp_business_number',
+        'whatsapp_business_id',
+        'whatsapp_webhook_url',
+        'whatsapp_account_id',
+        'ai_enabled',
+        'storefront_enabled',
         // Theme & Deployment fields
         'theme',
         'theme_config',
@@ -68,6 +76,8 @@ class Store extends Model
             'is_active' => 'boolean',
             'is_featured' => 'boolean',
             'trial_used' => 'boolean',
+            'ai_enabled' => 'boolean',
+            'storefront_enabled' => 'boolean',
             'ssl_enabled' => 'boolean',
             'tax_rate' => 'decimal:2',
             'latitude' => 'decimal:8',
@@ -112,6 +122,45 @@ class Store extends Model
         return $this->hasOne(Domain::class)->where('is_primary', true)->where('status', 'active');
     }
 
+    // Payment Methods
+    public function paymentMethods()
+    {
+        return $this->belongsToMany(
+            \App\Models\PaymentMethod::class,
+            'store_payment_methods',
+            'store_id',
+            'payment_method_id'
+        )->withPivot('display_order', 'is_enabled')->orderByPivot('display_order');
+    }
+
+    public function activePaymentMethods()
+    {
+        return $this->paymentMethods()->wherePivot('is_enabled', true);
+    }
+
+    // Delivery Agents (for restaurants)
+    public function deliveryAgents()
+    {
+        return $this->hasMany(\App\Models\DeliveryAgent::class);
+    }
+
+    public function activeDeliveryAgents()
+    {
+        return $this->deliveryAgents()->where('is_active', true);
+    }
+
+    // AI Test Cases
+    public function aiTestCases()
+    {
+        return $this->hasMany(\App\Models\AITestCase::class);
+    }
+
+    // WhatsApp Conversations
+    public function conversations()
+    {
+        return $this->hasMany(\App\Models\WhatsAppConversation::class);
+    }
+
     // Note: Products, Orders, Customers, Categories, Pages, Banners, Coupons, Employees, etc.
     // are stored in tenant-specific databases and should be accessed via TenantDatabaseService
 
@@ -141,6 +190,46 @@ class Store extends Model
     public function hasActiveSubscription(): bool
     {
         return $this->activeSubscription !== null;
+    }
+
+    /**
+     * WhatsApp accounts
+     */
+    public function whatsappAccounts()
+    {
+        return $this->hasMany(WhatsappAccount::class);
+    }
+
+    /**
+     * Default WhatsApp account
+     */
+    public function defaultWhatsappAccount()
+    {
+        return $this->belongsTo(WhatsappAccount::class, 'whatsapp_account_id');
+    }
+
+    /**
+     * Active WhatsApp accounts
+     */
+    public function activeWhatsappAccounts()
+    {
+        return $this->hasMany(WhatsappAccount::class)->active();
+    }
+
+    /**
+     * Get the active WhatsApp account for messaging
+     * Returns the default account if set, otherwise the first active account
+     */
+    public function getActiveWhatsappAccount(): ?WhatsappAccount
+    {
+        if ($this->whatsapp_account_id) {
+            $default = $this->defaultWhatsappAccount;
+            if ($default && $default->isActive()) {
+                return $default;
+            }
+        }
+
+        return $this->activeWhatsappAccounts()->first();
     }
 
     public function onTrial(): bool

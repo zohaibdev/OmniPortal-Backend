@@ -9,15 +9,6 @@ use Exception;
 
 class DomainService
 {
-    public function __construct(
-        private ?ForgeApiService $forgeApi = null
-    ) {
-        // ForgeApiService is optional - only used in production
-        if ($this->forgeApi === null && app()->environment('production')) {
-            $this->forgeApi = app(ForgeApiService::class);
-        }
-    }
-
     /**
      * Add a custom domain to a store.
      */
@@ -108,7 +99,7 @@ class DomainService
     public function verifyCname(string $domain): bool
     {
         $cnameRecords = @dns_get_record($domain, DNS_CNAME);
-        $baseDomain = config('services.forge.base_domain', 'time-luxe.com');
+        $baseDomain = config('deployment.base_domain', 'localhost');
         
         if ($cnameRecords) {
             foreach ($cnameRecords as $record) {
@@ -140,18 +131,6 @@ class DomainService
         if ($domain->status === Domain::STATUS_ACTIVE) {
             $store = $domain->store;
             $store->update(['custom_domain' => $domain->domain]);
-            
-            // Add custom domain to Forge site
-            if ($this->forgeApi && $store->forge_site_id) {
-                try {
-                    $this->forgeApi->addCustomDomain($store->forge_site_id, $domain->domain);
-                    
-                    // Install SSL certificate
-                    $this->forgeApi->installSslCertificate($store->forge_site_id, $domain->domain);
-                } catch (Exception $e) {
-                    \Log::warning('Failed to add custom domain to Forge: ' . $e->getMessage());
-                }
-            }
         }
     }
 

@@ -7,7 +7,6 @@ use App\Models\Store;
 use App\Models\Owner;
 use App\Models\Subscription;
 use App\Services\StoreService;
-use App\Services\ForgeApiService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -16,12 +15,10 @@ use Illuminate\Support\Facades\Log;
 class StoreController extends Controller
 {
     protected StoreService $storeService;
-    protected ForgeApiService $forgeService;
 
-    public function __construct(StoreService $storeService, ForgeApiService $forgeService)
+    public function __construct(StoreService $storeService)
     {
         $this->storeService = $storeService;
-        $this->forgeService = $forgeService;
     }
 
     /**
@@ -33,10 +30,12 @@ class StoreController extends Controller
         $request->validate([
             'owner_id' => 'required|exists:owners,id',
             'name' => 'required|string|max:255',
-            // slug is auto-generated, not accepted from input
+            'business_type' => 'required|in:restaurant,clothing,electronics,grocery,services,other',
             'description' => 'nullable|string',
             'email' => 'nullable|email',
             'phone' => 'nullable|string|max:20',
+            'whatsapp_business_number' => 'required|string|max:20|regex:/^[0-9+]{1,20}$/',
+            'whatsapp_business_id' => 'nullable|string|max:255',
             'address' => 'nullable|string',
             'city' => 'nullable|string|max:100',
             'state' => 'nullable|string|max:100',
@@ -44,16 +43,18 @@ class StoreController extends Controller
             'postal_code' => 'nullable|string|max:20',
             'timezone' => 'nullable|string',
             'currency' => 'nullable|string|max:3',
-            'provision_forge' => 'nullable|boolean', // Whether to create Forge site
         ]);
 
         $owner = Owner::findOrFail($request->owner_id);
         
         $storeData = $request->only([
             'name',
+            'business_type',
             'description',
             'email',
             'phone',
+            'whatsapp_business_number',
+            'whatsapp_business_id',
             'address',
             'city',
             'state',
@@ -63,20 +64,44 @@ class StoreController extends Controller
             'currency',
         ]);
 
-        // Use full provisioning if requested, otherwise basic creation
-        if ($request->boolean('provision_forge', false)) {
-            $store = $this->storeService->createWithProvisioning($owner, $storeData);
-        } else {
-            $store = $this->storeService->create($owner, $storeData);
-        }
+        // Set defaults
+        $storeData['currency'] = $storeData['currency'] ?? config('app.currency', 'PKR');
+        $storeData['timezone'] = $storeData['timezone'] ?? config('app.timezone', 'UTC');
 
-        $store->load('owner');
+        $store = $this->storeService->create($owner, $storeData);
+
+        // Add default payment methods
+        $this->addDefaultPaymentMethods($store);
+
+        $store->load('owner', 'paymentMethods');
 
         return response()->json([
             'message' => 'Store created successfully',
             'store' => $store,
-            'deployment_status' => $this->storeService->getDeploymentStatus($store),
         ], 201);
+    }
+
+    /**
+     * Add default payment methods for a store based on business type
+     */
+    private function addDefaultPaymentMethods(Store $store): void
+    {
+        $defaultMethods = [
+            ['id' => 1, 'order' => 0], // Cash on Delivery
+        ];
+
+        // Add online payment methods for non-service businesses
+        if ($store->business_type !== 'services') {
+            $defaultMethods[] = ['id' => 2, 'order' => 1]; // EasyPaisa
+            $defaultMethods[] = ['id' => 3, 'order' => 2]; // JazzCash
+        }
+
+        foreach ($defaultMethods as $method) {
+            $store->paymentMethods()->attach($method['id'], [
+                'display_order' => $method['order'],
+                'is_enabled' => true,
+            ]);
+        }
     }
 
     public function index(Request $request): JsonResponse
@@ -309,8 +334,8 @@ class StoreController extends Controller
         $hardDelete = request()->boolean('hard_delete', false);
         
         if ($hardDelete) {
-            // Queue full cleanup: Forge site, deployment folder, tenant DB, store record
-            \App\Jobs\DeleteStoreJob::dispatch($store);
+            // Use service method for deletion since DeleteStoreJob is disabled
+            $this->storeService->delete($store);
             
             // Force delete the store record
             $store->forceDelete();
@@ -329,17 +354,14 @@ class StoreController extends Controller
     }
 
     /**
-     * Redeploy store frontend
+     * Redeploy store frontend (disabled - requires deployment job)
      */
     public function redeploy(Store $store): JsonResponse
     {
-        // Queue the deployment job
-        \App\Jobs\DeployStorefrontJob::dispatch($store, true, app()->environment('production'));
-
+        // DeployStorefrontJob is disabled for local development
         return response()->json([
-            'message' => 'Store redeployment queued',
-            'deployment_status' => $this->storeService->getDeploymentStatus($store),
-        ]);
+            'message' => 'Store redeployment is disabled for local development',
+        ], 501);
     }
 
     /**
@@ -353,28 +375,13 @@ class StoreController extends Controller
     }
 
     /**
-     * Provision Forge site for existing store
+     * Provision Forge site for existing store (disabled)
      */
     public function provisionForge(Store $store): JsonResponse
     {
-        if (!$this->forgeService->isConfigured()) {
-            return response()->json([
-                'message' => 'Forge API not configured',
-            ], 400);
-        }
-
-        // Queue the full provisioning job
-        \App\Jobs\ProvisionStoreJob::dispatch(
-            $store,
-            createForgeSite: true,
-            createDatabase: !$store->database_name, // Only create DB if not exists
-            deployStorefront: true
-        );
-        
         return response()->json([
-            'message' => 'Store provisioning started. This may take a few minutes.',
-            'store' => $store->fresh(),
-        ]);
+            'message' => 'Forge provisioning is disabled for local development',
+        ], 501);
     }
 
     /**

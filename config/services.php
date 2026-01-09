@@ -18,12 +18,6 @@ return [
         'token' => env('POSTMARK_TOKEN'),
     ],
 
-    'ses' => [
-        'key' => env('AWS_ACCESS_KEY_ID'),
-        'secret' => env('AWS_SECRET_ACCESS_KEY'),
-        'region' => env('AWS_DEFAULT_REGION', 'us-east-1'),
-    ],
-
     'resend' => [
         'key' => env('RESEND_KEY'),
     ],
@@ -44,12 +38,24 @@ return [
         ],
     ],
 
-    'forge' => [
-        'api_token' => env('FORGE_API_TOKEN'),
-        'server_id' => env('FORGE_SERVER_ID'),
-        'base_domain' => env('FORGE_BASE_DOMAIN', 'time-luxe.com'),
-        'php_version' => env('FORGE_PHP_VERSION', 'php83'),
-        'database_user' => env('FORGE_DATABASE_USER', 'forge'),
+    'openai' => [
+        'api_key' => env('OPENAI_API_KEY'),
+        'model' => env('OPENAI_MODEL', 'gpt-4o-mini'),
+        'stt_model' => env('OPENAI_STT_MODEL', 'whisper-1'),
+        'tts_model' => env('OPENAI_TTS_MODEL', 'tts-1'),
+        'voice_enabled' => env('AI_VOICE_ENABLED', false),
+    ],
+
+    'whatsapp' => [
+        'token' => env('WHATSAPP_TOKEN'),
+        'phone_id' => env('WHATSAPP_PHONE_ID'),
+        'verify_token' => env('WHATSAPP_WEBHOOK_VERIFY_TOKEN'),
+    ],
+
+    'meta' => [
+        'app_id' => env('META_APP_ID'),
+        'app_secret' => env('META_APP_SECRET'),
+        'redirect_uri' => env('META_REDIRECT_URI', env('APP_URL') . '/api/whatsapp/callback'),
     ],
 
 ];

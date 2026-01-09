@@ -4,7 +4,6 @@ namespace App\Observers;
 
 use App\Models\Store;
 use App\Services\IdEncryptionService;
-use App\Services\StoreBrandingService;
 use App\Services\TenantDatabaseService;
 use Illuminate\Support\Facades\Log;
 
@@ -12,8 +11,7 @@ class StoreObserver
 {
     public function __construct(
         private TenantDatabaseService $tenantService,
-        private IdEncryptionService $encryptionService,
-        private StoreBrandingService $brandingService
+        private IdEncryptionService $encryptionService
     ) {}
 
     /**
@@ -25,21 +23,6 @@ class StoreObserver
         if (empty($store->encrypted_id)) {
             $store->encrypted_id = $this->encryptionService->encodeWithType($store->id, 'store');
             $store->saveQuietly();
-        }
-
-        // Create store folder for branding/assets first (fast operation)
-        try {
-            $this->brandingService->createStoreFolder($store);
-            
-            Log::info('Store branding folder created', [
-                'store_id' => $store->id,
-                'slug' => $store->slug,
-            ]);
-        } catch (\Exception $e) {
-            Log::error('Failed to create store branding folder', [
-                'store_id' => $store->id,
-                'error' => $e->getMessage(),
-            ]);
         }
 
         // Auto-create tenant database if enabled
@@ -119,20 +102,6 @@ class StoreObserver
                     'error' => $e->getMessage(),
                 ]);
             }
-        }
-
-        // Delete store branding folder
-        try {
-            $this->brandingService->deleteStoreFolder($store);
-            
-            Log::info('Store branding folder deleted', [
-                'store_id' => $store->id,
-            ]);
-        } catch (\Exception $e) {
-            Log::error('Failed to delete store branding folder', [
-                'store_id' => $store->id,
-                'error' => $e->getMessage(),
-            ]);
         }
     }
 }

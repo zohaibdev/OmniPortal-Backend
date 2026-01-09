@@ -16,6 +16,17 @@ return [
             explode(',', env('APP_PREVIOUS_KEYS', ''))
         ),
     ],
+
+    // Currency Configuration
+    'currency_code' => env('CURRENCY_CODE', 'PKR'),
+    'currency_symbol' => env('CURRENCY_SYMBOL', 'Rs'),
+
+    // Feature Flags
+    'store_frontend_enabled' => env('STORE_FRONTEND_ENABLED', false),
+    'ai_enabled' => env('AI_ENABLED', true),
+    'ai_voice_enabled' => env('AI_VOICE_ENABLED', true),
+    'payment_screenshot_required' => env('PAYMENT_SCREENSHOT_REQUIRED', true),
+
     'maintenance' => [
         'driver' => env('APP_MAINTENANCE_DRIVER', 'file'),
         'store' => env('APP_MAINTENANCE_STORE', 'database'),

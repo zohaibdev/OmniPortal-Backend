@@ -35,6 +35,15 @@ Route::get('plans', [\App\Http\Controllers\Api\SubscriptionController::class, 'p
 // Webhook routes
 Route::post('webhooks/stripe', [\App\Http\Controllers\Api\WebhookController::class, 'stripe']);
 
+// WhatsApp webhook (global - routes by phone_number_id)
+Route::prefix('webhooks/whatsapp')->group(function () {
+    Route::get('/', [\App\Http\Controllers\Api\Owner\WhatsAppWebhookController::class, 'verify']);
+    Route::post('/', [\App\Http\Controllers\Api\Owner\WhatsAppWebhookController::class, 'webhook']);
+});
+
+// WhatsApp OAuth callback (public)
+Route::get('whatsapp/callback', [\App\Http\Controllers\Api\Owner\WhatsAppOAuthController::class, 'handleCallback']);
+
 
 
 
@@ -70,7 +79,18 @@ Route::middleware(['auth:sanctum'])->group(function () {
         Route::post('stores/{store}/provision-forge', [\App\Http\Controllers\Api\Admin\StoreController::class, 'provisionForge']);
         Route::put('stores/{store}/domain', [\App\Http\Controllers\Api\Admin\StoreController::class, 'updateDomain']);
 
-        // Owners management
+        // Store Configuration (Payment Methods, Delivery Agents)
+        Route::get('stores/{store}/payment-methods', [\App\Http\Controllers\Api\Admin\StoreConfigurationController::class, 'paymentMethods']);
+        Route::put('stores/{store}/payment-methods', [\App\Http\Controllers\Api\Admin\StoreConfigurationController::class, 'updatePaymentMethods']);
+        Route::get('payment-methods', [\App\Http\Controllers\Api\Admin\StoreConfigurationController::class, 'allPaymentMethods']);
+
+        // Delivery Agents (restaurants only)
+        Route::get('stores/{store}/delivery-agents', [\App\Http\Controllers\Api\Admin\StoreConfigurationController::class, 'deliveryAgents']);
+        Route::post('stores/{store}/delivery-agents', [\App\Http\Controllers\Api\Admin\StoreConfigurationController::class, 'createDeliveryAgent']);
+        Route::put('stores/{store}/delivery-agents/{deliveryAgent}', [\App\Http\Controllers\Api\Admin\StoreConfigurationController::class, 'updateDeliveryAgent']);
+        Route::delete('stores/{store}/delivery-agents/{deliveryAgent}', [\App\Http\Controllers\Api\Admin\StoreConfigurationController::class, 'deleteDeliveryAgent']);
+
+        // Billing & Subscriptions
         Route::apiResource('owners', \App\Http\Controllers\Api\Admin\OwnerController::class);
         Route::post('owners/{owner}/reset-password', [\App\Http\Controllers\Api\Admin\OwnerController::class, 'resetPassword']);
         Route::get('owners/{owner}/billing', [\App\Http\Controllers\Api\Admin\BillingController::class, 'ownerBilling']);
@@ -123,6 +143,16 @@ Route::prefix('owner')->middleware(['auth:sanctum', 'is.owner'])->group(function
     Route::get('stores/{store}', [\App\Http\Controllers\Api\Owner\StoreController::class, 'show']);
     Route::put('stores/{store}', [\App\Http\Controllers\Api\Owner\StoreController::class, 'update']);
 
+    // WhatsApp Account Management
+    Route::prefix('whatsapp')->group(function () {
+        Route::get('accounts', [\App\Http\Controllers\Api\Owner\WhatsAppOAuthController::class, 'index']);
+        Route::get('oauth-url', [\App\Http\Controllers\Api\Owner\WhatsAppOAuthController::class, 'getOAuthUrl']);
+        Route::post('accounts/{account}/disconnect', [\App\Http\Controllers\Api\Owner\WhatsAppOAuthController::class, 'disconnect']);
+        Route::post('accounts/{account}/set-default', [\App\Http\Controllers\Api\Owner\WhatsAppOAuthController::class, 'setDefault']);
+        Route::post('accounts/{account}/toggle-status', [\App\Http\Controllers\Api\Owner\WhatsAppOAuthController::class, 'toggleStatus']);
+        Route::post('accounts/{account}/refresh', [\App\Http\Controllers\Api\Owner\WhatsAppOAuthController::class, 'refresh']);
+    });
+
     // Store-specific resources (with store context)
     Route::prefix('{store}')->middleware('resolve.tenant')->group(function () {
         // Dashboard
@@ -165,6 +195,28 @@ Route::prefix('owner')->middleware(['auth:sanctum', 'is.owner'])->group(function
         Route::get('payments/{payment}', [\App\Http\Controllers\Api\Store\PaymentController::class, 'show']);
         Route::post('payments/{payment}/refund', [\App\Http\Controllers\Api\Store\PaymentController::class, 'refund']);
 
+        // Payment Methods (Owner-defined)
+        Route::apiResource('payment-methods', \App\Http\Controllers\Api\Owner\PaymentMethodController::class);
+        Route::get('payment-methods-active', [\App\Http\Controllers\Api\Owner\PaymentMethodController::class, 'active']);
+
+        // Delivery Agents (Restaurant only)
+        Route::apiResource('delivery-agents', \App\Http\Controllers\Api\Owner\DeliveryAgentController::class);
+        Route::get('delivery-agents-active', [\App\Http\Controllers\Api\Owner\DeliveryAgentController::class, 'active']);
+        Route::get('delivery-agents-available', [\App\Http\Controllers\Api\Owner\DeliveryAgentController::class, 'available']);
+        Route::get('delivery-agents/{id}/stats', [\App\Http\Controllers\Api\Owner\DeliveryAgentController::class, 'stats']);
+
+        // Payment Verification (Order Payment Confirmation)
+        Route::get('orders/pending-payment-verification', [\App\Http\Controllers\Api\Owner\OrderPaymentController::class, 'pendingVerification']);
+        Route::get('orders/{id}/payment-screenshot', [\App\Http\Controllers\Api\Owner\OrderPaymentController::class, 'screenshot']);
+        Route::post('orders/{id}/approve-payment', [\App\Http\Controllers\Api\Owner\OrderPaymentController::class, 'approve']);
+        Route::post('orders/{id}/reject-payment', [\App\Http\Controllers\Api\Owner\OrderPaymentController::class, 'reject']);
+
+        // AI Test Cases
+        Route::apiResource('ai-tests', \App\Http\Controllers\Api\Owner\AITestController::class);
+        Route::get('ai-tests-summary', [\App\Http\Controllers\Api\Owner\AITestController::class, 'summary']);
+        Route::post('ai-tests/{id}/run', [\App\Http\Controllers\Api\Owner\AITestController::class, 'runTest']);
+        Route::post('ai-tests-run-all', [\App\Http\Controllers\Api\Owner\AITestController::class, 'runAllTests']);
+
         // Subscription & Billing (Owner)
         Route::get('subscription', [\App\Http\Controllers\Api\Owner\SubscriptionController::class, 'show']);
         Route::get('subscription/plans', [\App\Http\Controllers\Api\Owner\SubscriptionController::class, 'plans']);
@@ -197,53 +249,6 @@ Route::prefix('owner')->middleware(['auth:sanctum', 'is.owner'])->group(function
         Route::get('domains/{domain}/dns-instructions', [\App\Http\Controllers\Owner\DomainController::class, 'dnsInstructions']);
         Route::delete('domains/{domain}', [\App\Http\Controllers\Owner\DomainController::class, 'destroy']);
 
-        // Branding (Theme, Logo, Colors)
-        Route::get('branding', [\App\Http\Controllers\Api\Owner\BrandingController::class, 'show']);
-        Route::put('branding', [\App\Http\Controllers\Api\Owner\BrandingController::class, 'update']);
-        Route::post('branding/logo', [\App\Http\Controllers\Api\Owner\BrandingController::class, 'uploadLogo']);
-        Route::post('branding/favicon', [\App\Http\Controllers\Api\Owner\BrandingController::class, 'uploadFavicon']);
-        Route::post('branding/og-image', [\App\Http\Controllers\Api\Owner\BrandingController::class, 'uploadOgImage']);
-        Route::put('branding/custom-css', [\App\Http\Controllers\Api\Owner\BrandingController::class, 'updateCustomCss']);
-        Route::post('branding/reset', [\App\Http\Controllers\Api\Owner\BrandingController::class, 'reset']);
-
-        // Theme Management
-        Route::prefix('theme')->group(function () {
-            Route::get('/available', [\App\Http\Controllers\Api\Owner\ThemeController::class, 'index']);
-            Route::get('/', [\App\Http\Controllers\Api\Owner\ThemeController::class, 'show']);
-            Route::put('/', [\App\Http\Controllers\Api\Owner\ThemeController::class, 'update']);
-            Route::put('/config', [\App\Http\Controllers\Api\Owner\ThemeController::class, 'updateConfig']);
-            Route::get('/preview-css', [\App\Http\Controllers\Api\Owner\ThemeController::class, 'previewCss']);
-            Route::post('/reset', [\App\Http\Controllers\Api\Owner\ThemeController::class, 'reset']);
-            Route::post('/deploy', [\App\Http\Controllers\Api\Owner\ThemeController::class, 'deploy']);
-        });
-
-        // CMS Management
-        Route::prefix('cms')->group(function () {
-            Route::get('/overview', [\App\Http\Controllers\Api\Owner\CMSController::class, 'overview']);
-            Route::get('/menu', [\App\Http\Controllers\Api\Owner\CMSController::class, 'getMenu']);
-            Route::put('/menu', [\App\Http\Controllers\Api\Owner\CMSController::class, 'updateMenu']);
-            Route::get('/footer', [\App\Http\Controllers\Api\Owner\CMSController::class, 'getFooter']);
-            Route::put('/footer', [\App\Http\Controllers\Api\Owner\CMSController::class, 'updateFooter']);
-            Route::get('/homepage', [\App\Http\Controllers\Api\Owner\CMSController::class, 'getHomepage']);
-            Route::put('/homepage', [\App\Http\Controllers\Api\Owner\CMSController::class, 'updateHomepage']);
-            Route::get('/seo', [\App\Http\Controllers\Api\Owner\CMSController::class, 'getSeo']);
-            Route::put('/seo', [\App\Http\Controllers\Api\Owner\CMSController::class, 'updateSeo']);
-        });
-
-        // File Manager
-        Route::prefix('files')->group(function () {
-            Route::get('/', [\App\Http\Controllers\Api\Owner\FileManagerController::class, 'index']);
-            Route::post('/upload', [\App\Http\Controllers\Api\Owner\FileManagerController::class, 'upload']);
-            Route::delete('/file', [\App\Http\Controllers\Api\Owner\FileManagerController::class, 'deleteFile']);
-            Route::post('/directory', [\App\Http\Controllers\Api\Owner\FileManagerController::class, 'createDirectory']);
-            Route::delete('/directory', [\App\Http\Controllers\Api\Owner\FileManagerController::class, 'deleteDirectory']);
-            Route::put('/rename', [\App\Http\Controllers\Api\Owner\FileManagerController::class, 'rename']);
-            Route::get('/content', [\App\Http\Controllers\Api\Owner\FileManagerController::class, 'getContent']);
-            Route::put('/content', [\App\Http\Controllers\Api\Owner\FileManagerController::class, 'saveContent']);
-            Route::get('/storage-usage', [\App\Http\Controllers\Api\Owner\FileManagerController::class, 'storageUsage']);
-            Route::post('/deploy', [\App\Http\Controllers\Api\Owner\FileManagerController::class, 'deploy']);
-        });
-
         // Meta Fields - Definitions (store-level field schemas)
         Route::get('meta-fields/types', [\App\Http\Controllers\Api\Store\MetaFieldController::class, 'types']);
         Route::get('meta-fields/{resourceType}/definitions', [\App\Http\Controllers\Api\Store\MetaFieldController::class, 'definitions']);
@@ -259,28 +264,6 @@ Route::prefix('owner')->middleware(['auth:sanctum', 'is.owner'])->group(function
         Route::put('meta-fields/{resourceType}/{resourceId}/{key}', [\App\Http\Controllers\Api\Store\MetaFieldController::class, 'update']);
         Route::delete('meta-fields/{resourceType}/{resourceId}/{key}', [\App\Http\Controllers\Api\Store\MetaFieldController::class, 'destroy']);
     });
-});
-
-
-// Storefront routes (public store pages)
-Route::prefix('storefront')->middleware('resolve.tenant')->group(function () {
-    Route::get('/', [\App\Http\Controllers\Api\Storefront\StoreController::class, 'show']);
-    Route::get('branding', [\App\Http\Controllers\Api\Storefront\BrandingController::class, 'show']);
-    Route::get('menu', [\App\Http\Controllers\Api\Storefront\MenuController::class, 'index']);
-    Route::get('menu/{category}', [\App\Http\Controllers\Api\Storefront\MenuController::class, 'category']);
-    Route::get('product/{product}', [\App\Http\Controllers\Api\Storefront\MenuController::class, 'product']);
-    Route::get('pages/{slug}', [\App\Http\Controllers\Api\Storefront\PageController::class, 'show']);
-    Route::get('banners', [\App\Http\Controllers\Api\Storefront\BannerController::class, 'index']);
-
-    // Cart & Checkout
-    Route::post('cart/validate', [\App\Http\Controllers\Api\Storefront\CartController::class, 'validateCart']);
-    Route::post('checkout', [\App\Http\Controllers\Api\Storefront\CheckoutController::class, 'process']);
-    Route::post('checkout/payment-intent', [\App\Http\Controllers\Api\Storefront\CheckoutController::class, 'createPaymentIntent']);
-    Route::get('order/{orderNumber}', [\App\Http\Controllers\Api\Storefront\OrderController::class, 'show']);
-    Route::get('order/{orderNumber}/track', [\App\Http\Controllers\Api\Storefront\OrderController::class, 'track']);
-
-    // Apply coupon
-    Route::post('coupon/apply', [\App\Http\Controllers\Api\Storefront\CouponController::class, 'apply']);
 });
 
 // Employee authenticated routes - access store dashboard with limited permissions

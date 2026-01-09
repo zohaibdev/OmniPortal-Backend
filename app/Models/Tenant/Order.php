@@ -30,6 +30,8 @@ class Order extends Model
         'currency',
         'payment_status',
         'payment_method',
+        'payment_method_id',
+        'payment_proof_path',
         'paid_at',
         'coupon_id',
         'coupon_code',
@@ -45,6 +47,9 @@ class Order extends Model
         'internal_notes',
         'source',
         'assigned_employee_id',
+        'delivery_agent_id',
+        'conversation_state',
+        'conversation_context',
         'meta_data',
     ];
 
@@ -59,6 +64,7 @@ class Order extends Model
             'tip_amount' => 'decimal:2',
             'total' => 'decimal:2',
             'delivery_address' => 'array',
+            'conversation_context' => 'array',
             'meta_data' => 'array',
             'paid_at' => 'datetime',
             'scheduled_at' => 'datetime',
@@ -78,10 +84,36 @@ class Order extends Model
     public const STATUS_CANCELLED = 'cancelled';
     public const STATUS_REFUNDED = 'refunded';
 
+    // Payment status constants
+    public const PAYMENT_STATUS_PENDING = 'pending';
+    public const PAYMENT_STATUS_PENDING_VERIFICATION = 'pending_verification';
+    public const PAYMENT_STATUS_PAID = 'paid';
+    public const PAYMENT_STATUS_REJECTED = 'rejected';
+    public const PAYMENT_STATUS_FAILED = 'failed';
+    public const PAYMENT_STATUS_REFUNDED = 'refunded';
+
+    // Conversation state constants
+    public const CONVERSATION_STATE_GREETING = 'greeting';
+    public const CONVERSATION_STATE_BROWSING = 'browsing';
+    public const CONVERSATION_STATE_ADDING_TO_ORDER = 'adding_to_order';
+    public const CONVERSATION_STATE_CONFIRMING_ORDER = 'confirming_order';
+    public const CONVERSATION_STATE_AWAITING_PAYMENT_SCREENSHOT = 'awaiting_payment_screenshot';
+    public const CONVERSATION_STATE_ORDER_PLACED = 'order_placed';
+
     // Relationships
     public function customer()
     {
         return $this->belongsTo(Customer::class);
+    }
+
+    public function paymentMethod()
+    {
+        return $this->belongsTo(PaymentMethod::class);
+    }
+
+    public function deliveryAgent()
+    {
+        return $this->belongsTo(DeliveryAgent::class);
     }
 
     public function items()
